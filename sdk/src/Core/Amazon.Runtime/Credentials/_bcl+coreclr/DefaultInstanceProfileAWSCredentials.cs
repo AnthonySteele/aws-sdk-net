@@ -34,7 +34,6 @@ namespace Amazon.Runtime
         
         private Timer credentialsRetrieverTimer;
         private ImmutableCredentials lastRetrievedCredentials;
-        private ReaderWriterLockSlim refreshLock;
         private Logger logger;
 
         private static readonly TimeSpan neverTimespan = TimeSpan.FromMilliseconds(-1);
@@ -49,14 +48,17 @@ namespace Amazon.Runtime
             {
                 CheckIsIMDSEnabled();
 
-                lock (instanceLock)
+                if (_instance == null)
                 {
-                    if (_instance == null)
+                    lock (instanceLock)
                     {
-                        _instance = new DefaultInstanceProfileAWSCredentials();
+                        if (_instance == null)
+                        {
+                            _instance = new DefaultInstanceProfileAWSCredentials();
 
-                        // force a fetch of credentials the very first time & schedule a timer task.
-                        _instance.RenewCredentials(null);
+                            // force a fetch of credentials the very first time & schedule a timer task.
+                            _instance.RenewCredentials(null);
+                        }
                     }
                 }
 
@@ -70,7 +72,6 @@ namespace Amazon.Runtime
             if (!EC2InstanceMetadata.IsIMDSEnabled) return;
 
             logger = Logger.GetLogger(typeof(DefaultInstanceProfileAWSCredentials));
-            refreshLock = new ReaderWriterLockSlim();
 
             // don't start the timer right away or periodic signalling.
             credentialsRetrieverTimer = new Timer(RenewCredentials, null, neverTimespan, neverTimespan);
@@ -84,25 +85,14 @@ namespace Amazon.Runtime
         {
             CheckIsIMDSEnabled();
 
-            ImmutableCredentials credentials;
-            try
-            {
-                refreshLock.EnterReadLock();
-                credentials = lastRetrievedCredentials?.Copy();
-            }
-            finally
-            {
-                refreshLock.ExitReadLock();
-            }
+            var credentials = lastRetrievedCredentials?.Copy();
 
             if (credentials == null)
             {
                 throw new AmazonServiceException(FailedToGetCredentialsMessage);
             }
-            else
-            {
-                return credentials;
-            }
+
+            return credentials;
         }
 
 #if AWS_ASYNC_API   
@@ -111,7 +101,7 @@ namespace Amazon.Runtime
         /// </summary>
         public override Task<ImmutableCredentials> GetCredentialsAsync()
         {
-            return Task.FromResult<ImmutableCredentials>(GetCredentials());
+            return Task.FromResult(GetCredentials());
         }
 #endif
         #endregion
@@ -143,22 +133,14 @@ namespace Amazon.Runtime
                 // if another thread is holding onto a readlock, we don't want to cancel the refresh.
                 // wait at least a few seconds until lock becomes free. with 2 min refresh rate,
                 // we only get 2 tries to refresh credentials before it expires.
-                Instance.refreshLock.TryEnterWriteLock(lockWaitTimeOut);
-                {
-                    Instance.lastRetrievedCredentials = newCredentials;
-                }
-                Instance.refreshLock.ExitWriteLock();
+
+                Interlocked.Exchange(ref Instance.lastRetrievedCredentials, newCredentials);
             }
             catch (Exception e)
             {
+                Interlocked.Exchange(ref Instance.lastRetrievedCredentials, null);
                 // we want to suppress any exceptions from this timer task.
-                Instance?.logger.Error(e, FailedToGetCredentialsMessage);
-
-                Instance.refreshLock.TryEnterWriteLock(lockWaitTimeOut);
-                {
-                    Instance.lastRetrievedCredentials = null;
-                }
-                Instance.refreshLock.ExitWriteLock();
+                Instance.logger.Error(e, FailedToGetCredentialsMessage);
             }
             finally
             {
@@ -186,7 +168,6 @@ namespace Amazon.Runtime
                     lock (instanceLock)
                     {
                         credentialsRetrieverTimer.Dispose();
-                        refreshLock.Dispose();
                         logger = null;
                         _instance = null;
                     }
