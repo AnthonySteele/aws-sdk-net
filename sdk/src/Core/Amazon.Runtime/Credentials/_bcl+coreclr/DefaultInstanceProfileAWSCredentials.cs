@@ -38,7 +38,6 @@ namespace Amazon.Runtime
 
         private static readonly TimeSpan neverTimespan = TimeSpan.FromMilliseconds(-1);
         private static readonly TimeSpan refreshRate = TimeSpan.FromMinutes(2); // EC2 refreshes credentials 5 min before expiration
-        private static readonly TimeSpan lockWaitTimeOut = TimeSpan.FromSeconds(5);
         private const string FailedToGetCredentialsMessage = "Failed to retrieve credentials from EC2 Instance Metadata Service.";
         
         private static DefaultInstanceProfileAWSCredentials _instance;
